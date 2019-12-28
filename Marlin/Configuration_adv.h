@@ -1449,12 +1449,15 @@
  * should the probe position be modified with M851XY then the
  * probe points will follow. This prevents any change from causing
  * the probe to be unable to reach any points.
+ * 
+ * The -35 and 33 here come from NOZZLE_TO_PROBE_OFFSET, don't know how to access
+ * the array in the define in another define
  */
 #if PROBE_SELECTED && !IS_KINEMATIC
-  //#define MIN_PROBE_EDGE_LEFT MIN_PROBE_EDGE
-  //#define MIN_PROBE_EDGE_RIGHT MIN_PROBE_EDGE
-  //#define MIN_PROBE_EDGE_FRONT MIN_PROBE_EDGE
-  //#define MIN_PROBE_EDGE_BACK MIN_PROBE_EDGE
+  //#define MIN_PROBE_EDGE_LEFT (MIN_PROBE_EDGE)
+  //#define MIN_PROBE_EDGE_RIGHT (X_BED_SIZE + -35 - MIN_PROBE_EDGE)
+  //#define MIN_PROBE_EDGE_FRONT (33 + MIN_PROBE_EDGE)
+  //#define MIN_PROBE_EDGE_BACK (Y_BED_SIZE - MIN_PROBE_EDGE)
 #endif
 
 #if EITHER(MESH_BED_LEVELING, AUTO_BED_LEVELING_UBL)
