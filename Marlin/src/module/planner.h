@@ -30,7 +30,7 @@
  * Copyright (c) 2009-2011 Simen Svale Skogsrud
  */
 
-#include "../Marlin.h"
+#include "../MarlinCore.h"
 
 #include "motion.h"
 #include "../gcode/queue.h"
@@ -171,7 +171,7 @@ typedef struct block_t {
 
 } block_t;
 
-#define HAS_POSITION_FLOAT ANY(LIN_ADVANCE, SCARA_FEEDRATE_SCALING, GRADIENT_MIX)
+#define HAS_POSITION_FLOAT ANY(LIN_ADVANCE, SCARA_FEEDRATE_SCALING, GRADIENT_MIX, LCD_SHOW_E_TOTAL)
 
 #define BLOCK_MOD(n) ((n)&(BLOCK_BUFFER_SIZE-1))
 

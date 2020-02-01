@@ -47,8 +47,8 @@
 
 #include "../../lcd/ultralcd.h"
 
-#if HAS_DRIVER(L6470)                         // set L6470 absolute position registers to counts
-  #include "../../libs/L6470/L6470_Marlin.h"
+#if HAS_L64XX                         // set L6470 absolute position registers to counts
+  #include "../../libs/L64XX/L64XX_Marlin.h"
 #endif
 
 #define DEBUG_OUT ENABLED(DEBUG_LEVELING_FEATURE)
@@ -133,7 +133,7 @@
     destination.set(safe_homing_xy, current_position.z);
 
     #if HOMING_Z_WITH_PROBE
-      destination -= probe_offset;
+      destination -= probe.offset_xy;
     #endif
 
     if (position_is_reachable(destination)) {
@@ -161,6 +161,33 @@
   }
 
 #endif // Z_SAFE_HOMING
+
+#if ENABLED(IMPROVE_HOMING_RELIABILITY)
+
+  slow_homing_t begin_slow_homing() {
+    slow_homing_t slow_homing{0};
+    slow_homing.acceleration.set(planner.settings.max_acceleration_mm_per_s2[X_AXIS],
+                                 planner.settings.max_acceleration_mm_per_s2[Y_AXIS]);
+    planner.settings.max_acceleration_mm_per_s2[X_AXIS] = 100;
+    planner.settings.max_acceleration_mm_per_s2[Y_AXIS] = 100;
+    #if HAS_CLASSIC_JERK
+      slow_homing.jerk_xy = planner.max_jerk;
+      planner.max_jerk.set(0, 0);
+    #endif
+    planner.reset_acceleration_rates();
+    return slow_homing;
+  }
+
+  void end_slow_homing(const slow_homing_t &slow_homing) {
+    planner.settings.max_acceleration_mm_per_s2[X_AXIS] = slow_homing.acceleration.x;
+    planner.settings.max_acceleration_mm_per_s2[Y_AXIS] = slow_homing.acceleration.y;
+    #if HAS_CLASSIC_JERK
+      planner.max_jerk = slow_homing.jerk_xy;
+    #endif
+    planner.reset_acceleration_rates();
+  }
+
+#endif // IMPROVE_HOMING_RELIABILITY
 
 /**
  * G28: Home all axes according to settings
@@ -203,6 +230,7 @@ void GcodeSuite::G28(const bool always_home_all) {
     }
   #endif
 
+  // Home (O)nly if position is unknown
   if (!homing_needed() && parser.boolval('O')) {
     if (DEBUGGING(LEVELING)) DEBUG_ECHOLNPGM("> homing not needed, skip\n<<< G28");
     return;
@@ -229,18 +257,37 @@ void GcodeSuite::G28(const bool always_home_all) {
     workspace_plane = PLANE_XY;
   #endif
 
-  #if ENABLED(IMPROVE_HOMING_RELIABILITY)
-    slow_homing_t slow_homing{0};
-    slow_homing.acceleration.set(planner.settings.max_acceleration_mm_per_s2[X_AXIS],
-                                 planner.settings.max_acceleration_mm_per_s2[Y_AXIS]);
-    planner.settings.max_acceleration_mm_per_s2[X_AXIS] = 100;
-    planner.settings.max_acceleration_mm_per_s2[Y_AXIS] = 100;
-    #if HAS_CLASSIC_JERK
-      slow_homing.jerk_xy = planner.max_jerk;
-      planner.max_jerk.set(0, 0);
-    #endif
+  #define HAS_CURRENT_HOME(N) (defined(N##_CURRENT_HOME) && N##_CURRENT_HOME != N##_CURRENT)
+  #define HAS_HOMING_CURRENT (HAS_CURRENT_HOME(X) || HAS_CURRENT_HOME(X2) || HAS_CURRENT_HOME(Y) || HAS_CURRENT_HOME(Y2))
 
-    planner.reset_acceleration_rates();
+  #if HAS_HOMING_CURRENT
+    auto debug_current = [](const char * const s, const int16_t a, const int16_t b){
+      DEBUG_ECHO(s); DEBUG_ECHOLNPAIR(" current: ", a, " -> ", b);
+    };
+    #if HAS_CURRENT_HOME(X)
+      const int16_t tmc_save_current_X = stepperX.getMilliamps();
+      stepperX.rms_current(X_CURRENT_HOME);
+      if (DEBUGGING(LEVELING)) debug_current("X", tmc_save_current_X, X_CURRENT_HOME);
+    #endif
+    #if HAS_CURRENT_HOME(X2)
+      const int16_t tmc_save_current_X2 = stepperX2.getMilliamps();
+      stepperX2.rms_current(X2_CURRENT_HOME);
+      if (DEBUGGING(LEVELING)) debug_current("X2", tmc_save_current_X2, X2_CURRENT_HOME);
+    #endif
+    #if HAS_CURRENT_HOME(Y)
+      const int16_t tmc_save_current_Y = stepperY.getMilliamps();
+      stepperY.rms_current(Y_CURRENT_HOME);
+      if (DEBUGGING(LEVELING)) debug_current("Y", tmc_save_current_Y, Y_CURRENT_HOME);
+    #endif
+    #if HAS_CURRENT_HOME(Y2)
+      const int16_t tmc_save_current_Y2 = stepperY2.getMilliamps();
+      stepperY2.rms_current(Y2_CURRENT_HOME);
+      if (DEBUGGING(LEVELING)) debug_current("Y2", tmc_save_current_Y2, Y2_CURRENT_HOME);
+    #endif
+  #endif
+
+  #if ENABLED(IMPROVE_HOMING_RELIABILITY)
+    slow_homing_t slow_homing = begin_slow_homing();
   #endif
 
   // Always home with tool 0 active
@@ -263,6 +310,10 @@ void GcodeSuite::G28(const bool always_home_all) {
 
     home_delta();
     UNUSED(always_home_all);
+
+    #if ENABLED(IMPROVE_HOMING_RELIABILITY)
+      end_slow_homing(slow_homing);
+    #endif
 
   #else // NOT DELTA
 
@@ -287,7 +338,7 @@ void GcodeSuite::G28(const bool always_home_all) {
 
     if (z_homing_height && (doX || doY)) {
       // Raise Z before homing any other axes and z is not already high enough (never lower z)
-      destination.z = z_homing_height;
+      destination.z = z_homing_height + (TEST(axis_known_position, Z_AXIS) ? 0.0f : current_position.z);
       if (destination.z > current_position.z) {
         if (DEBUGGING(LEVELING)) DEBUG_ECHOLNPAIR("Raise Z (before homing) to ", destination.z);
         do_blocking_move_to_z(destination.z);
@@ -348,6 +399,10 @@ void GcodeSuite::G28(const bool always_home_all) {
       if (doY) homeaxis(Y_AXIS);
     #endif
 
+    #if ENABLED(IMPROVE_HOMING_RELIABILITY)
+      end_slow_homing(slow_homing);
+    #endif
+
     // Home Z last if homing towards the bed
     #if Z_HOME_DIR < 0
       if (doZ) {
@@ -361,7 +416,7 @@ void GcodeSuite::G28(const bool always_home_all) {
         #endif
 
         #if HOMING_Z_WITH_PROBE && defined(Z_AFTER_PROBING)
-          move_z_after_probing();
+          probe.move_z_after_probing();
         #endif
 
       } // doZ
@@ -381,6 +436,10 @@ void GcodeSuite::G28(const bool always_home_all) {
 
     if (dxc_is_duplicating()) {
 
+      #if ENABLED(IMPROVE_HOMING_RELIABILITY)
+        slow_homing = begin_slow_homing();
+      #endif
+
       // Always home the 2nd (right) extruder first
       active_extruder = 1;
       homeaxis(X_AXIS);
@@ -397,10 +456,12 @@ void GcodeSuite::G28(const bool always_home_all) {
       delayed_move_time = 0;
       active_extruder_parked = true;
       extruder_duplication_enabled = IDEX_saved_duplication_state;
-      extruder_duplication_enabled = false;
-
       dual_x_carriage_mode         = IDEX_saved_mode;
       stepper.set_directions();
+
+      #if ENABLED(IMPROVE_HOMING_RELIABILITY)
+        end_slow_homing(slow_homing);
+      #endif
     }
 
   #endif // DUAL_X_CARRIAGE
@@ -433,13 +494,20 @@ void GcodeSuite::G28(const bool always_home_all) {
     tool_change(old_tool_index, NO_FETCH);
   #endif
 
-  #if ENABLED(IMPROVE_HOMING_RELIABILITY)
-    planner.settings.max_acceleration_mm_per_s2[X_AXIS] = slow_homing.acceleration.x;
-    planner.settings.max_acceleration_mm_per_s2[Y_AXIS] = slow_homing.acceleration.y;
-    #if HAS_CLASSIC_JERK
-      planner.max_jerk = slow_homing.jerk_xy;
+  #if HAS_HOMING_CURRENT
+    if (DEBUGGING(LEVELING)) DEBUG_ECHOLNPGM("Restore driver current...");
+    #if HAS_CURRENT_HOME(X)
+      stepperX.rms_current(tmc_save_current_X);
     #endif
-    planner.reset_acceleration_rates();
+    #if HAS_CURRENT_HOME(X2)
+      stepperX2.rms_current(tmc_save_current_X2);
+    #endif
+    #if HAS_CURRENT_HOME(Y)
+      stepperY.rms_current(tmc_save_current_Y);
+    #endif
+    #if HAS_CURRENT_HOME(Y2)
+      stepperY2.rms_current(tmc_save_current_Y2);
+    #endif
   #endif
 
   ui.refresh();
@@ -458,11 +526,18 @@ void GcodeSuite::G28(const bool always_home_all) {
 
   if (DEBUGGING(LEVELING)) DEBUG_ECHOLNPGM("<<< G28");
 
-  #if HAS_DRIVER(L6470)
+  #if HAS_L64XX
     // Set L6470 absolute position registers to counts
-    for (uint8_t j = 1; j <= L6470::chain[0]; j++) {
-      const uint8_t cv = L6470::chain[j];
-      L6470.set_param(cv, L6470_ABS_POS, stepper.position((AxisEnum)L6470.axis_xref[cv]));
+    // constexpr *might* move this to PROGMEM.
+    // If not, this will need a PROGMEM directive and an accessor.
+    static constexpr AxisEnum L64XX_axis_xref[MAX_L64XX] = {
+      X_AXIS, Y_AXIS, Z_AXIS,
+      X_AXIS, Y_AXIS, Z_AXIS, Z_AXIS,
+      E_AXIS, E_AXIS, E_AXIS, E_AXIS, E_AXIS, E_AXIS
+    };
+    for (uint8_t j = 1; j <= L64XX::chain[0]; j++) {
+      const uint8_t cv = L64XX::chain[j];
+      L64xxManager.set_param((L64XX_axis_t)cv, L6470_ABS_POS, stepper.position(L64XX_axis_xref[cv]));
     }
   #endif
 }
